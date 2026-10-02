@@ -5,7 +5,7 @@ import type { Profile, Summary } from '../../shared/types';
 // Every account shows the same 9 followers and 9 following, with no profile pictures.
 const FRIENDS = ['mana_insta', 'adelfos.bro1', 'adelfos.bro2', 'adelfos.bro3', 'adelfos.bro4', 'adelfos.bro5', 'adelfos.bro6', 'adelfos.bro7', 'not_areti.spamm'];
 const MAX_POSTS = 12;
-type Sess = { room: string; id: string; key: string; name: string };
+type Sess = { id: string; key: string };
 
 const get = (k: string) => { try { return localStorage.getItem(k) || ''; } catch { return ''; } };
 const set = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch {} };
@@ -53,7 +53,7 @@ function Av({ src, s, badge, thin, onClick }: { src?: string; s: number; badge?:
 
 export default function App() {
   const [sess, setSess] = useState<Sess | null>(S0);
-  const [me, setMe] = useState<Profile | null>(S0 ? load('pgm-' + S0.room) : null);
+  const [me, setMe] = useState<Profile | null>(S0 ? load('pgm') : null);
   const [list, setList] = useState<Summary[]>([]);
   const [ready, setReady] = useState(false);
   const [online, setOnline] = useState(true);
@@ -64,40 +64,43 @@ export default function App() {
   const [sheet, setSheet] = useState<'' | 'followers' | 'following' | 'menu'>('');
   const [liked, setLiked] = useState<Set<string>>(new Set());
   const [q, setQ] = useState('');
+  const [mode, setMode] = useState<'in' | 'new'>('in');
   const [nameIn, setNameIn] = useState('');
-  const [codeIn, setCodeIn] = useState('');
+  const [userIn, setUserIn] = useState('');
+  const [pick, setPick] = useState<Summary[] | null>(null);
   const [df, setDf] = useState({ name: '', username: '', bio: '' });
   const [np, setNp] = useState({ img: '', cap: '' });
   const [msg, setMsg] = useState('');
   const sock = useRef<Socket>();
   const meRef = useRef(me); meRef.current = me;
+  const sessRef = useRef(sess); sessRef.current = sess;
   const avRef = useRef<HTMLInputElement>(null);
   const postRef = useRef<HTMLInputElement>(null);
 
   const flash = (m: string) => { setMsg(m); setTimeout(() => setMsg(''), 2600); };
 
+  const leaveLocal = (m: string) => { set('pgs', ''); set('pgm', ''); setSess(null); setMe(null); setPick(null); setSheet(''); setOpen(null); setScreen('profile'); if (m) flash(m); };
+
   useEffect(() => {
-    if (!sess) return;
-    const s = io(); sock.current = s; setReady(false);
+    const s = io(); sock.current = s;
     s.on('connect', () => {
       setOnline(true);
-      s.emit('join', sess.room, (l: Summary[]) => {
+      s.emit('hello', (l: Summary[]) => {
         setList(l); setReady(true);
-        let m = meRef.current;
-        if (!m) { // first time: create the profile from the name typed at sign-up
-          let u = slug(sess.name); const b = u; let n = 2;
-          while (l.some((p) => p.username === u)) u = b + n++;
-          m = { id: sess.id, username: u, name: sess.name, bio: '', avatar: '', posts: [], updated: 0 };
-          setMe(m); set('pgm-' + sess.room, JSON.stringify(m));
+        const ss = sessRef.current; let m = meRef.current;
+        if (!ss) return;
+        if (!m) { s.emit('get', ss.id, (p: Profile | null) => (p ? setMe(p) : leaveLocal(''))); return; }
+        // The server may have restarted and forgotten this profile: send this device's copy again.
+        if (!l.some((p) => p.id === m!.id)) {
+          if (l.some((p) => p.username === m!.username)) { m = { ...m, username: m.username + (10 + Math.floor(Math.random() * 90)) }; setMe(m); set('pgm', JSON.stringify(m)); }
+          s.emit('save', { ...m, key: ss.key }, (r: string) => { if (r === 'gone') leaveLocal('This account was deleted.'); });
         }
-        // New profile, or the server restarted and forgot it: send this device's copy.
-        if (!l.some((p) => p.id === m!.id)) s.emit('save', { ...m, key: sess.key }, () => {});
       });
     });
     s.on('disconnect', () => setOnline(false));
     s.on('list', setList);
     return () => { s.disconnect(); };
-  }, [sess]);
+  }, []);
 
   const sumOf = list.find((p) => p.id === viewId);
   useEffect(() => {
@@ -106,8 +109,8 @@ export default function App() {
   }, [screen, viewId, sumOf?.updated]);
 
   const commit = (next: Profile) => {
-    setMe(next); set('pgm-' + sess!.room, JSON.stringify(next));
-    sock.current?.emit('save', { ...next, key: sess!.key }, (r: string) => { if (r !== 'ok') flash(r === 'taken' ? 'That username is taken' : 'Could not save. Try again.'); });
+    setMe(next); set('pgm', JSON.stringify(next));
+    sock.current?.emit('save', { ...next, key: sess!.key }, (r: string) => { if (r === 'gone') leaveLocal('This account was deleted.'); else if (r !== 'ok') flash(r === 'taken' ? 'That username is taken' : 'Could not save. Try again.'); });
   };
   const pickAvatar = async (f?: File) => { if (!f || !me) return; try { commit({ ...me, avatar: await shrink(f, 160, 0.8) }); } catch { flash('Could not read that photo'); } };
   const pickPost = async (f?: File) => { if (!f) return; try { setNp((x) => ({ ...x, img: '' })); const d = await shrink(f, 480, 0.6); setNp((x) => ({ ...x, img: d })); } catch { flash('Could not read that photo'); } };
@@ -126,25 +129,48 @@ export default function App() {
   };
   const delPost = () => { if (!me || !open || !confirm('Delete this post?')) return; commit({ ...me, posts: me.posts.filter((x) => x.id !== open.p.posts[open.i].id) }); setOpen(null); };
   const shareLink = () => { const u = location.href.split('#')[0]; if (navigator.share) navigator.share({ title: 'Poemgram', url: u }).catch(() => {}); else navigator.clipboard?.writeText(u).then(() => flash('Link copied')); };
-  const logout = () => {
-    if (!confirm('Log out? Your profile stays visible to classmates, but you will not be able to edit it on this device.')) return;
-    set('pgs', ''); setSess(null); setMe(null); setSheet(''); setScreen('profile');
+  const logout = () => leaveLocal('');
+  const delAccount = () => {
+    if (!me || !sess || !confirm('Delete your account? Your profile and all your posts will be removed for good.')) return;
+    sock.current?.emit('remove', { id: me.id, key: sess.key }, (r: string) => { if (r === 'ok') leaveLocal('Your account was deleted.'); else flash('Could not delete. Try again.'); });
+  };
+  const signIn = (id?: string) => {
+    sock.current?.emit('login', { q: nameIn.trim(), id }, (r: any) => {
+      if (r.ok) { set('pgs', JSON.stringify({ id: r.profile.id, key: r.key })); set('pgm', JSON.stringify(r.profile)); setSess({ id: r.profile.id, key: r.key }); setMe(r.profile); setPick(null); setScreen('profile'); }
+      else if (r.r === 'many') setPick(r.list);
+      else flash('No account with that name');
+    });
+  };
+  const createAccount = () => {
+    const p: Profile = { id: rand(), username: userIn, name: nameIn.trim(), bio: '', avatar: '', posts: [], updated: 0 }, key = rand();
+    sock.current?.emit('save', { ...p, key }, (r: string) => {
+      if (r === 'ok') { set('pgs', JSON.stringify({ id: p.id, key })); set('pgm', JSON.stringify(p)); setSess({ id: p.id, key }); setMe(p); setScreen('profile'); }
+      else flash(r === 'taken' ? 'That username is taken' : r === 'full' ? 'The class is full' : 'Could not create the account. Try again.');
+    });
   };
   const goOther = (id: string) => { if (id === me?.id) return setScreen('profile'); setOther(null); setViewId(id); setScreen('other'); };
 
   if (!sess) {
-    const go = () => { const s: Sess = { room: codeIn, id: rand(), key: rand(), name: nameIn.trim() }; set('pgs', JSON.stringify(s)); setMe(null); setSess(s); };
+    const taken = !!userIn && list.some((p) => p.username === userIn);
     return (
       <div id="app"><div className="form">
         <h1 className="logo">Poemgram</h1>
-        <label className="f"><span>Your name</span><input value={nameIn} maxLength={40} placeholder="e.g. Markos" onChange={(e) => setNameIn(e.target.value)} /></label>
-        <label className="f"><span>Class code</span><input value={codeIn} maxLength={12} autoCapitalize="characters" onChange={(e) => setCodeIn(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, ''))} /></label>
-        <button className="btn p" style={{ width: '100%' }} disabled={!nameIn.trim() || !codeIn} onClick={go}>Sign up</button>
-        <p className="empty">Your profile is saved automatically on this device.</p>
+        <div className="tabs" style={{ marginBottom: 18 }}>
+          <button className={'seg' + (mode === 'in' ? ' on' : '')} onClick={() => { setMode('in'); setPick(null); }}>Sign in</button>
+          <button className={'seg' + (mode === 'new' ? ' on' : '')} onClick={() => { setMode('new'); setPick(null); }}>Create new</button>
+        </div>
+        <label className="f"><span>Name</span><input value={nameIn} maxLength={40} placeholder="e.g. Markos" onChange={(e) => { setNameIn(e.target.value); setPick(null); }} /></label>
+        {mode === 'new' && <label className="f"><span>Username</span><input value={userIn} maxLength={30} autoCapitalize="none" placeholder="Choose a username" onChange={(e) => setUserIn(e.target.value.toLowerCase().replace(/[^a-z0-9._]/g, ''))} />{taken && <span style={{ color: '#ed4956' }}>That username is taken</span>}</label>}
+        {mode === 'in'
+          ? <button className="btn p" style={{ width: '100%' }} disabled={!nameIn.trim() || !ready} onClick={() => signIn()}>Sign in</button>
+          : <button className="btn p" style={{ width: '100%' }} disabled={!nameIn.trim() || !userIn || taken || !ready} onClick={createAccount}>Create account</button>}
+        {pick && <><p className="empty">Several accounts have this name. Which one is yours?</p>{pick.map((p) => <button key={p.id} className="row" onClick={() => signIn(p.id)}><Av src={p.avatar} s={56} thin /><div><b>{p.username}</b><span>{p.name}</span></div></button>)}</>}
+        {!ready && <p className="empty">Connecting…</p>}
+        {msg && <div id="toast">{msg}</div>}
       </div></div>
     );
   }
-  if (!me) return <div id="app"><div className="empty">{online ? 'Setting up your profile…' : 'Connecting…'}</div></div>;
+  if (!me) return <div id="app"><div className="empty">{online ? 'Loading your profile…' : 'Connecting…'}</div></div>;
 
   const Tabs = (
     <div className="tabs">
@@ -199,7 +225,7 @@ export default function App() {
         <button key={p.id} className="row" onClick={() => goOther(p.id)}>
           <Av src={p.avatar} s={56} thin /><div><b>{p.username}</b><span>{p.name} · {p.n} {p.n === 1 ? 'post' : 'posts'}</span></div>
         </button>
-      )) : <div className="empty">{ready ? (q ? 'No results' : 'No classmates yet. Share the link and the class code!') : '…'}</div>}
+      )) : <div className="empty">{ready ? (q ? 'No results' : 'No classmates yet. Share the link!') : '…'}</div>}
     </>
   );
 
@@ -225,6 +251,7 @@ export default function App() {
             <label className="f"><span>Name</span><input value={df.name} maxLength={40} onChange={(e) => setDf({ ...df, name: e.target.value })} /></label>
             <label className="f"><span>Username</span><input value={df.username} maxLength={30} autoCapitalize="none" onChange={(e) => setDf({ ...df, username: e.target.value.toLowerCase().replace(/[^a-z0-9._]/g, '') })} /></label>
             <label className="f"><span>Bio</span><textarea rows={3} maxLength={150} value={df.bio} onChange={(e) => setDf({ ...df, bio: e.target.value })} /></label>
+            <button className="btn" style={{ width: '100%', marginTop: 24, color: '#ed4956' }} onClick={delAccount}>Delete account</button>
           </div>
         </div></div>
       )}
@@ -260,8 +287,9 @@ export default function App() {
           <div className="sheet" onClick={(e) => e.stopPropagation()}>
             {sheet === 'menu' ? (
               <div className="form">
-                <p>Class code: <b>{sess.room}</b></p>
-                <button className="btn" style={{ width: '100%', color: '#ed4956' }} onClick={logout}>Log out</button>
+                <p>Signed in as <b>{me.username}</b></p>
+                <button className="btn" style={{ width: '100%', marginBottom: 10 }} onClick={logout}>Log out</button>
+                <button className="btn" style={{ width: '100%', color: '#ed4956' }} onClick={delAccount}>Delete account</button>
               </div>
             ) : (
               <>
