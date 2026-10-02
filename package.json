@@ -1,0 +1,1 @@
+{"name":"poemgram","private":true,"type":"module","scripts":{"build":"npm --prefix client install --include=dev && npm --prefix client run build","start":"tsx server/index.ts","dev:server":"tsx watch server/index.ts","dev:client":"npm --prefix client run dev"},"dependencies":{"express":"^4.19.2","socket.io":"^4.7.5","tsx":"^4.19.0"}}
